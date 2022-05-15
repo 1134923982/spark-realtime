@@ -1,6 +1,8 @@
 package com.yu.gmall.realtime.app
 
-import com.alibaba.fastjson.{JSON, JSONObject}
+import com.alibaba.fastjson.serializer.SerializeConfig
+import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
+import com.yu.gmall.realtime.bean.{PageActionLog, PageDisplayLog, PageLog, StartLog}
 import com.yu.gmall.realtime.util.MyKafkaUtils
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.spark.SparkConf
@@ -145,7 +147,23 @@ object OdsBaseLogApp {
                   }
                 }
               }
-              // 启动数据
+              // 启动数据（课下完成）
+              val startJsonObj: JSONObject = jsonObj.getJSONObject("start")
+              if(startJsonObj != null ){
+                //提取字段
+                val entry: String = startJsonObj.getString("entry")
+                val loadingTime: Long = startJsonObj.getLong("loading_time")
+                val openAdId: String = startJsonObj.getString("open_ad_id")
+                val openAdMs: Long = startJsonObj.getLong("open_ad_ms")
+                val openAdSkipMs: Long = startJsonObj.getLong("open_ad_skip_ms")
+
+                //封装StartLog
+                var startLog =
+                  StartLog(mid,uid,ar,ch,isNew,md,os,vc,ba,entry,openAdId,loadingTime,openAdMs,openAdSkipMs,ts)
+                //写出DWD_START_LOG_TOPIC
+                MyKafkaUtils.send(DWD_START_LOG_TOPIC , JSON.toJSONString(startLog ,new SerializeConfig(true)))
+
+              }
             }
 
           }
