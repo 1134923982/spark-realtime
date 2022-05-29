@@ -3,10 +3,12 @@ package com.yu.gmall.realtime.app
 import com.alibaba.fastjson.serializer.SerializeConfig
 import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
 import com.yu.gmall.realtime.bean.{PageActionLog, PageDisplayLog, PageLog, StartLog}
-import com.yu.gmall.realtime.util.MyKafkaUtils
+import com.yu.gmall.realtime.util.{MyKafkaUtils, MyOffsetsUtils}
 import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
 import org.apache.spark.streaming.dstream.{DStream, InputDStream}
+import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 
 /**
@@ -35,10 +37,29 @@ object OdsBaseLogApp {
     //2 消费kafka数据
     val topicName: String = "ODS_BASE_LOG_1018"
     val groupId: String = "ODS_BASE_LOG_GROUP_1018"
-    val kafkaDStream: InputDStream[ConsumerRecord[String, String]] = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId)
+
+    //指定offset消费
+    val offsets: Map[TopicPartition, Long] = MyOffsetsUtils.readOffset(topicName, groupId)
+    var kafkaDStream: InputDStream[ConsumerRecord[String, String]] = null
+    if (offsets!=null && offsets.nonEmpty){
+      kafkaDStream = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId, offsets)
+
+    }else{
+      kafkaDStream = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId)
+    }
+
+    //Todo 补充提取offset
+    var offsetRanges: Array[OffsetRange] = null
+    val offsetRangeDStream: DStream[ConsumerRecord[String, String]] = kafkaDStream.transform(
+      rdd => {
+        offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+        rdd
+      }
+    )
+
     //3 处理数据
     //3.1 转换数据结构
-    val jsonObjDStream: DStream[JSONObject] = kafkaDStream.map(
+    val jsonObjDStream: DStream[JSONObject] = offsetRangeDStream.map(
       consumerRecord => {
         val log: String = consumerRecord.value()
         val jsonObj: JSONObject = JSON.parseObject(log)
@@ -69,8 +90,9 @@ object OdsBaseLogApp {
 
     jsonObjDStream.foreachRDD(
       rdd => {
-        rdd.foreach(
-          jsonObj => {
+        rdd.foreachPartition(jsonObjIter =>{
+          for (jsonObj <- jsonObjIter) {
+
             //分流过程
             // 分流错误数据
             val errObj: JSONObject = jsonObj.getJSONObject("err")
@@ -158,16 +180,23 @@ object OdsBaseLogApp {
                 val openAdSkipMs: Long = startJsonObj.getLong("open_ad_skip_ms")
 
                 //封装StartLog
-                var startLog =
+                val startLog =
                   StartLog(mid,uid,ar,ch,isNew,md,os,vc,ba,entry,openAdId,loadingTime,openAdMs,openAdSkipMs,ts)
                 //写出DWD_START_LOG_TOPIC
                 MyKafkaUtils.send(DWD_START_LOG_TOPIC , JSON.toJSONString(startLog ,new SerializeConfig(true)))
 
               }
             }
-
           }
-        )
+          MyKafkaUtils.flush()
+        })
+
+//        rdd.foreach(
+//          jsonObj => {
+//
+//          }
+//        )
+        MyOffsetsUtils.saveOffset(topicName, groupId, offsetRanges)
       }
     )
 
